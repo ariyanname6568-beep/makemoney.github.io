@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Line Fill Puzzle Game</title>
+  <style>
+    body {
+      background: #121212;
+      color: #eee;
+      font-family: sans-serif;
+      margin: 0; padding: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      height: 100vh;
+    }
+    h1 {
+      margin: 20px;
+    }
+    canvas {
+      background: #1f1f1f;
+      border-radius: 12px;
+      box-shadow: 0 0 20px #0ff;
+      touch-action: none;
+    }
+    #controls {
+      margin-top: 10px;
+      display: flex;
+      gap: 10px;
+    }
+    button {
+      padding: 6px 12px;
+      font-size: 16px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      background-color: #333;
+      color: white;
+    }
+    button:hover {
+      background-color: #444;
+    }
+    #message {
+      margin-top: 10px;
+      font-weight: bold;
+      height: 20px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Line Fill Puzzle</h1>
+  <canvas id="canvas" width="400" height="400"></canvas>
+  <div id="controls">
+    <button onclick="resetGame()">Reset</button>
+    <button onclick="nextLevel()">Next Level</button>
+  </div>
+  <div id="message"></div>
+
+  <script>
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const message = document.getElementById("message");
+    const TRACE_RADIUS = 15;  // Strict radius for segment proximity
+
+    const LEVELS = [
+      [
+        { x: 100, y: 100 },
+        { x: 100, y: 250 },
+        { x: 100, y: 300 },
+        { x: 150, y: 300 },
+        { x: 150, y: 250 },
+        { x: 150, y: 200 },
+        { x: 200, y: 200 },
+        { x: 200, y: 250 },
+        { x: 200, y: 100 },
+        { x: 150, y: 100 },
+        { x: 150, y: 150 },
+        { x: 100, y: 150 },
+        { x: 100, y: 100 }
+      ],
+      [
+        { x: 200, y: 300 },
+        { x: 150, y: 250 },
+        { x: 100, y: 200 },
+        { x: 150, y: 200 },
+        { x: 180, y: 170 },
+        { x: 220, y: 170 },
+        { x: 250, y: 200 },
+        { x: 300, y: 200 },
+        { x: 250, y: 250 },
+        { x: 200, y: 300 },
+        { x: 170, y: 320 },
+        { x: 230, y: 320 },
+        { x: 200, y: 300 }
+      ],
+      [
+        { x: 100, y: 100 },
+        { x: 300, y: 100 },
+        { x: 300, y: 200 },
+        { x: 200, y: 200 },
+        { x: 200, y: 300 },
+        { x: 400, y: 300 },
+        { x: 400, y: 100 },
+        { x: 500, y: 100 },
+        { x: 500, y: 400 },
+        { x: 100, y: 400 },
+        { x: 100, y: 300 },
+        { x: 150, y: 300 },
+        { x: 150, y: 250 },
+        { x: 100, y: 250 },
+        { x: 100, y: 200 },
+        { x: 150, y: 200 },
+        { x: 150, y: 150 },
+        { x: 100, y: 150 },
+        { x: 100, y: 100 }
+      ],
+      [
+        { x: 100, y: 100 },
+        { x: 300, y: 300 },
+        { x: 200, y: 200 },
+        { x: 300, y: 100 },
+        { x: 100, y: 300 }
+      ],
+      [ // Wave
+        { x: 50, y: 200 },
+        { x: 100, y: 150 },
+        { x: 150, y: 250 },
+        { x: 200, y: 150 },
+        { x: 250, y: 250 },
+        { x: 300, y: 150 },
+        { x: 350, y: 200 }
+      ],
+      [ // Zigzag
+        { x: 50, y: 100 },
+        { x: 100, y: 200 },
+        { x: 150, y: 100 },
+        { x: 200, y: 200 },
+        { x: 250, y: 100 },
+        { x: 300, y: 200 },
+        { x: 350, y: 100 }
+      ]
+    ];
+
+    let levelIndex = 0;
+    let pathPoints = [];
+    let SEGMENTS = [];
+    let currentSegment = null;
+    let isDrawing = false;
+    let lastPos = null;
+
+    function initSegments() {
+      SEGMENTS = [];
+      for (let i = 0; i < pathPoints.length - 1; i++) {
+        SEGMENTS.push({
+          from: pathPoints[i],
+          to: pathPoints[i + 1],
+          traced: false,
+          animProgress: 0,
+          next: null,
+          prev: null,
+          // helper method to project a point onto this segment
+          project(p) {
+            const dx = this.to.x - this.from.x;
+            const dy = this.to.y - this.from.y;
+            const lengthSquared = dx*dx + dy*dy;
+            if (lengthSquared === 0) return {progress: 0, distance: Math.hypot(p.x - this.from.x, p.y - this.from.y)};
+            const t = ((p.x - this.from.x) * dx + (p.y - this.from.y) * dy) / lengthSquared;
+            const clampedT = Math.min(Math.max(t, 0), 1);
+            const projX = this.from.x + clampedT * dx;
+            const projY = this.from.y + clampedT * dy;
+            const dist = Math.hypot(p.x - projX, p.y - projY);
+            return {progress: clampedT, distance: dist};
+          }
+        });
+      }
+      // Link segments
+      for (let i = 0; i < SEGMENTS.length; i++) {
+        SEGMENTS[i].next = SEGMENTS[i + 1] || null;
+        SEGMENTS[i].prev = SEGMENTS[i - 1] || null;
+      }
+    }
+
+    // Find closest segment to pos within TRACE_RADIUS, return segment and progress (0-1)
+    function findClosestSegmentWithProgress(pos) {
+      let minDist = Infinity;
+      let closestSeg = null;
+      let closestProgress = 0;
+
+      for (let seg of SEGMENTS) {
+        const {progress, distance} = seg.project(pos);
+        if (distance < minDist) {
+          minDist = distance;
+          closestSeg = seg;
+          closestProgress = progress;
+        }
+      }
+
+      if (minDist <= TRACE_RADIUS) {
+        return {segment: closestSeg, progress: closestProgress};
+      }
+      return null;
+    }
+
+    function handleTrace(pos) {
+      if (!currentSegment) {
+        // Start tracing only if close enough to some segment
+        const result = findClosestSegmentWithProgress(pos);
+        if (result) {
+          currentSegment = result.segment;
+          currentSegment.traced = true;
+          currentSegment.animProgress = result.progress;
+          lastPos = pos;
+          vibrate();
+        }
+        return;
+      }
+
+      // Check if still close to current segment
+      const {progress, distance} = currentSegment.project(pos);
+      if (distance > TRACE_RADIUS) {
+        // Moved away from path, stop drawing
+        currentSegment = null;
+        return;
+      }
+
+      if (!lastPos) {
+        lastPos = pos;
+        return;
+      }
+
+      // Movement vector from last to current
+      const moveVec = { x: pos.x - lastPos.x, y: pos.y - lastPos.y };
+
+      // Segment vector
+      const segVec = {
+        x: currentSegment.to.x - currentSegment.from.x,
+        y: currentSegment.to.y - currentSegment.from.y
+      };
+
+      // Segment length
+      const segLength = Math.hypot(segVec.x, segVec.y);
+
+      // Normalize segment vector
+      const segNorm = { x: segVec.x / segLength, y: segVec.y / segLength };
+
+      // Project moveVec onto segment direction
+      const moveAlong = moveVec.x * segNorm.x + moveVec.y * segNorm.y;
+
+      // Current progress distance on segment (in px)
+      let currentDist = currentSegment.animProgress * segLength;
+
+      // Update currentDist with movement
+      currentDist += moveAlong;
+
+      // Clamp & handle overflow between segments
+      if (currentDist < 0) {
+        // Move backward beyond start
+        if (currentSegment.prev) {
+          const overflow = -currentDist;
+          currentSegment = currentSegment.prev;
+          const prevLength = Math.hypot(
+            currentSegment.to.x - currentSegment.from.x,
+            currentSegment.to.y - currentSegment.from.y
+          );
+          currentSegment.animProgress = 1 - overflow / prevLength;
+          currentSegment.traced = true;
+          lastPos = pos;
+          vibrate();
+          return;
+        } else {
+          currentDist = 0;
+        }
+      } else if (currentDist > segLength) {
+        // Move forward beyond end
+        if (currentSegment.next) {
+          const overflow = currentDist - segLength;
+          currentSegment = currentSegment.next;
+          const nextLength = Math.hypot(
+            currentSegment.to.x - currentSegment.from.x,
+            currentSegment.to.y - currentSegment.from.y
+          );
+          currentSegment.animProgress = overflow / nextLength;
+          currentSegment.traced = true;
+          lastPos = pos;
+          vibrate();
+          return;
+        } else {
+          currentDist = segLength;
+        }
+      }
+
+      currentSegment.animProgress = currentDist / segLength;
+      currentSegment.traced = currentSegment.animProgress > 0;
+
+      lastPos = pos;
+    }
+
+    function allTraced() {
+      return SEGMENTS.every(seg => seg.traced);
+    }
+
+    function vibrate() {
+      if (navigator.vibrate) navigator.vibrate(50);
+    }
+
+    function drawPath() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.lineCap = "round";
+
+      // Draw base shape line (gray)
+      ctx.beginPath();
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = "#444";
+      ctx.moveTo(pathPoints[0].x, pathPoints[0].y);
+      for (let i = 1; i < pathPoints.length; i++) {
+        ctx.lineTo(pathPoints[i].x, pathPoints[i].y);
+      }
+      ctx.stroke();
+
+      // Draw traced segments glowing cyan
+      ctx.lineWidth = 8;
+      ctx.strokeStyle = "#0ff";
+      ctx.shadowColor = "#0ff";
+      ctx.shadowBlur = 10;
+
+      for (const seg of SEGMENTS) {
+        if (seg.traced) {
+          ctx.beginPath();
+          ctx.moveTo(seg.from.x, seg.from.y);
+          ctx.lineTo(
+            seg.from.x + (seg.to.x - seg.from.x) * seg.animProgress,
+            seg.from.y + (seg.to.y - seg.from.y) * seg.animProgress
+          );
+          ctx.stroke();
+        }
+      }
+
+      // If completed all segments, show message
+      if (allTraced()) {
+        message.textContent = "🎉 Puzzle Solved!";
+        message.style.color = "#0f0";
+      } else {
+        message.textContent = "";
+      }
+
+      requestAnimationFrame(drawPath);
+    }
+
+    function getPos(e) {
+      const rect = canvas.getBoundingClientRect();
+      const source = e.touches ? e.touches[0] : e;
+      return {
+        x: source.clientX - rect.left,
+        y: source.clientY - rect.top
+      };
+    }
+
+    function resetGame() {
+      message.textContent = "";
+      pathPoints = [...LEVELS[levelIndex]];
+      initSegments();
+      currentSegment = null;
+      lastPos = null;
+    }
+
+    function nextLevel() {
+      levelIndex = (levelIndex + 1) % LEVELS.length;
+      resetGame();
+    }
+
+    canvas.addEventListener("mousedown", e => {
+      isDrawing = true;
+      handleTrace(getPos(e));
+    });
+    canvas.addEventListener("mousemove", e => {
+      if (isDrawing) handleTrace(getPos(e));
+    });
+    canvas.addEventListener("mouseup", () => isDrawing = false);
+    canvas.addEventListener("mouseleave", () => isDrawing = false);
+
+    canvas.addEventListener("touchstart", e => {
+      e.preventDefault();
+      isDrawing = true;
+      handleTrace(getPos(e));
+    });
+    canvas.addEventListener("touchmove", e => {
+      e.preventDefault();
+      if (isDrawing) handleTrace(getPos(e));
+    });
+    canvas.addEventListener("touchend", () => isDrawing = false);
+    canvas.addEventListener("touchcancel", () => isDrawing = false);
+
+    // Initialize game
+    resetGame();
+    drawPath();
+  </script>
+</body>
+</html>
